@@ -325,10 +325,15 @@ public:
                   off_t offset,
                   size_t max_count,
                   bool read_partly,
+                  size_t* read_count,
                   bool* is_eof) const {
         if (filename == BRAFT_SNAPSHOT_META_FILE) {
-            *is_eof = true;
-            return _meta_table.save_to_iobuf_as_remote(out);
+            int ret = _meta_table.save_to_iobuf_as_remote(out);
+            if (ret == 0) {
+                *read_count = out->size();
+                *is_eof = true;
+            }
+            return ret;
         }
         LocalFileMeta file_meta;
         if (_meta_table.get_file_meta(filename, &file_meta) != 0) {
@@ -336,18 +341,31 @@ public:
         }
         // go through throttle
         size_t new_max_count = max_count;
-        if (_snapshot_throttle != NULL) {
+        if (_snapshot_throttle && FLAGS_raft_enable_throttle_when_install_snapshot) {
+            int ret = 0;
+            int64_t start = butil::cpuwide_time_us();
+            int64_t used_count = 0;
             new_max_count = _snapshot_throttle->throttled_by_throughput(max_count);
             if (new_max_count < max_count) {
                 // if it's not allowed to read partly or it's allowed but
                 // throughput is throttled to 0, try again.
                 if (!read_partly || new_max_count == 0) {
-                    return EAGAIN;
+                    ret = EAGAIN;
                 }
             }
+            if (ret == 0) {
+                ret = LocalDirReader::read_file_with_meta(
+                    out, filename, &file_meta, offset, new_max_count, read_count, is_eof);
+                used_count = out->size();
+            }
+            if ((ret == 0 || ret == EAGAIN) && used_count < (int64_t)new_max_count) {
+                _snapshot_throttle->return_unused_throughput(
+                        new_max_count, used_count, butil::cpuwide_time_us() - start);
+            }
+            return ret;
         }
         return LocalDirReader::read_file_with_meta(
-                out, filename, &file_meta, offset, new_max_count, is_eof);
+                out, filename, &file_meta, offset, new_max_count, read_count, is_eof);
     }
    
 private:

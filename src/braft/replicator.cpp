@@ -18,15 +18,16 @@
 
 #include "braft/replicator.h"
 
-#include <gflags/gflags.h>                      // DEFINE_int32
+#include <gflags/gflags.h>                       // DEFINE_int32
 #include <butil/unique_ptr.h>                    // std::unique_ptr
 #include <butil/time.h>                          // butil::gettimeofday_us
-#include <brpc/controller.h>               // brpc::Controller
-#include <brpc/reloadable_flags.h>         // BRPC_VALIDATE_GFLAG
+#include <brpc/controller.h>                     // brpc::Controller
+#include <brpc/reloadable_flags.h>               // BRPC_VALIDATE_GFLAG
 
 #include "braft/node.h"                          // NodeImpl
-#include "braft/ballot_box.h"            // BallotBox 
+#include "braft/ballot_box.h"                    // BallotBox 
 #include "braft/log_entry.h"                     // LogEntry
+#include "braft/snapshot_throttle.h"             // SnapshotThrottle
 
 namespace braft {
 
@@ -41,6 +42,10 @@ BRPC_VALIDATE_GFLAG(raft_max_parallel_append_entries_rpc_num, ::brpc::PositiveIn
 DEFINE_int32(raft_max_body_size, 512 * 1024,
              "The max byte size of AppendEntriesRequest");
 BRPC_VALIDATE_GFLAG(raft_max_body_size, ::brpc::PositiveInteger);
+
+DEFINE_int32(raft_retry_replicate_interval_ms, 1000,
+             "Interval of retry to append entries or install snapshot");
+BRPC_VALIDATE_GFLAG(raft_retry_replicate_interval_ms, brpc::PositiveInteger);
 
 static bvar::LatencyRecorder g_send_entries_latency("raft_send_entries");
 static bvar::LatencyRecorder g_normalized_send_entries_latency("raft_send_entries_normalized");
@@ -82,6 +87,9 @@ Replicator::~Replicator() {
     if (_reader) {
         _options.snapshot_storage->close(_reader);
         _reader = NULL;
+        if (_options.snapshot_throttle) {
+            _options.snapshot_throttle->finish_one_task(true);
+        }
     }
     if (_options.node) {
         _options.node->Release();
@@ -213,7 +221,7 @@ void Replicator::_on_block_timedout(void *arg) {
     }
 }
 
-void Replicator::_block(long start_time_us, int /*error_code NOTE*/) {
+void Replicator::_block(long start_time_us, int error_code) {
     // TODO: Currently we don't care about error_code which indicates why the
     // very RPC fails. To make it better there should be different timeout for
     // each individual error (e.g. we don't need check every
@@ -223,15 +231,22 @@ void Replicator::_block(long start_time_us, int /*error_code NOTE*/) {
         CHECK_EQ(0, bthread_id_unlock(_id)) << "Fail to unlock " << _id;
         return;
     }
+    int blocking_time = 0;
+    if (error_code == EBUSY || error_code == EINTR) {
+        blocking_time = FLAGS_raft_retry_replicate_interval_ms;
+    } else {
+        blocking_time = *_options.dynamic_heartbeat_timeout_ms;
+    }
     const timespec due_time = butil::milliseconds_from(
-            butil::microseconds_to_timespec(start_time_us), 
-            *_options.dynamic_heartbeat_timeout_ms);
+	    butil::microseconds_to_timespec(start_time_us), blocking_time);
     bthread_timer_t timer;
     const int rc = bthread_timer_add(&timer, due_time, 
                                   _on_block_timedout, (void*)_id.value);
-    BRAFT_VLOG << "Blocking " << _options.peer_id << " for " 
-              << *_options.dynamic_heartbeat_timeout_ms << "ms";
     if (rc == 0) {
+        std::stringstream ss;
+	ss << "Blocking " << _options.peer_id << " for "
+           << blocking_time << "ms" << ", group " << _options.group_id;
+	BRAFT_VLOG << ss.str();
         _st.st = BLOCKING;
         CHECK_EQ(0, bthread_id_unlock(_id)) << "Fail to unlock " << _id;
         return;
@@ -247,9 +262,9 @@ void Replicator::_on_heartbeat_returned(
         AppendEntriesRequest* request, 
         AppendEntriesResponse* response,
         int64_t rpc_send_time) {
-    std::unique_ptr<brpc::Controller> cntl_gurad(cntl);
-    std::unique_ptr<AppendEntriesRequest>  req_gurad(request);
-    std::unique_ptr<AppendEntriesResponse> res_gurad(response);
+    std::unique_ptr<brpc::Controller> cntl_guard(cntl);
+    std::unique_ptr<AppendEntriesRequest>  req_guard(request);
+    std::unique_ptr<AppendEntriesResponse> res_guard(response);
     Replicator *r = NULL;
     bthread_id_t dummy_id = { id };
     const long start_time_us = butil::gettimeofday_us();
@@ -308,9 +323,9 @@ void Replicator::_on_rpc_returned(ReplicatorId id, brpc::Controller* cntl,
                      AppendEntriesRequest* request, 
                      AppendEntriesResponse* response,
                      int64_t rpc_send_time) {
-    std::unique_ptr<brpc::Controller> cntl_gurad(cntl);
-    std::unique_ptr<AppendEntriesRequest>  req_gurad(request);
-    std::unique_ptr<AppendEntriesResponse> res_gurad(response);
+    std::unique_ptr<brpc::Controller> cntl_guard(cntl);
+    std::unique_ptr<AppendEntriesRequest>  req_guard(request);
+    std::unique_ptr<AppendEntriesResponse> res_guard(response);
     Replicator *r = NULL;
     bthread_id_t dummy_id = { id };
     const long start_time_us = butil::gettimeofday_us();
@@ -669,8 +684,16 @@ void Replicator::_wait_more_entries() {
 
 void Replicator::_install_snapshot() {
     CHECK(!_reader);
+
+    if (_options.snapshot_throttle && !_options.snapshot_throttle->add_one_more_task(true)) {
+        return _block(butil::gettimeofday_us(), EBUSY);
+    }
+
     _reader = _options.snapshot_storage->open();
     if (!_reader){
+        if (_options.snapshot_throttle) {
+            _options.snapshot_throttle->finish_one_task(true);
+	}
         NodeImpl *node_impl = _options.node;
         node_impl->AddRef();
         CHECK_EQ(0, bthread_id_unlock(_id)) << "Fail to unlock " << _id;
@@ -744,6 +767,9 @@ void Replicator::_on_install_snapshot_returned(
     if (r->_reader) {
         r->_options.snapshot_storage->close(r->_reader);
         r->_reader = NULL;
+        if (r->_options.snapshot_throttle) {
+            r->_options.snapshot_throttle->finish_one_task(true);
+        }
     }
     std::stringstream ss;
     ss << "received InstallSnapshotResponse from "
@@ -982,9 +1008,9 @@ void Replicator::_on_timeout_now_returned(
                 TimeoutNowRequest* request, 
                 TimeoutNowResponse* response,
                 bool stop_after_finish) {
-    std::unique_ptr<brpc::Controller> cntl_gurad(cntl);
-    std::unique_ptr<TimeoutNowRequest>  req_gurad(request);
-    std::unique_ptr<TimeoutNowResponse> res_gurad(response);
+    std::unique_ptr<brpc::Controller> cntl_guard(cntl);
+    std::unique_ptr<TimeoutNowRequest>  req_guard(request);
+    std::unique_ptr<TimeoutNowResponse> res_guard(response);
     Replicator *r = NULL;
     bthread_id_t dummy_id = { id };
     if (bthread_id_lock(dummy_id, (void**)&r) != 0) {
@@ -1143,6 +1169,7 @@ int ReplicatorGroup::init(const NodeId& node_id, const ReplicatorGroupOptions& o
     _common_options.group_id = node_id.group_id;
     _common_options.server_id = node_id.peer_id;
     _common_options.snapshot_storage = options.snapshot_storage;
+    _common_options.snapshot_throttle = options.snapshot_throttle;
     return 0;
 }
 
