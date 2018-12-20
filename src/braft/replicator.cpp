@@ -705,6 +705,15 @@ void Replicator::_install_snapshot() {
         return;
     } 
     std::string uri = _reader->generate_uri_for_copy();
+    // NOTICE: If uri is something wrong, retry later instead of reporting error
+    // immediately(making raft Node error), as FileSystemAdaptor layer of _reader is
+    // user defined and may need some control logic when opened
+    if (uri.empty()) {
+        LOG(WARNING) << "node " << _options.group_id << ":" << _options.server_id
+		    << " refuse to send InstallSnapshotRequest to " << _options.peer_id
+		    << " because snapshot uri is empty";
+        return _block(butil::gettimeofday_us(), EBUSY);
+    }
     SnapshotMeta meta;
     // report error on failure
     if (_reader->load_meta(&meta) != 0){

@@ -1,11 +1,11 @@
 // Copyright (c) 2015 Baidu.com, Inc. All Rights Reserved
-// 
+//
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-// 
+//
 //     http://www.apache.org/licenses/LICENSE-2.0
-// 
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -28,8 +28,7 @@
 #include "braft/node.h"
 #include "braft/file_service.h"
 
-//#define BRAFT_SNAPSHOT_PATTERN "snapshot_%020ld"
-#define BRAFT_SNAPSHOT_PATTERN "snapshot_%020"PRId64
+#define BRAFT_SNAPSHOT_PATTERN "snapshot_%020" PRId64
 #define BRAFT_SNAPSHOT_META_FILE "__raft_snapshot_meta"
 
 namespace braft {
@@ -40,7 +39,7 @@ LocalSnapshotMetaTable::LocalSnapshotMetaTable() {}
 
 LocalSnapshotMetaTable::~LocalSnapshotMetaTable() {}
 
-int LocalSnapshotMetaTable::add_file(const std::string& filename, 
+int LocalSnapshotMetaTable::add_file(const std::string& filename,
                                 const LocalFileMeta& meta) {
     Map::value_type value(filename, meta);
     std::pair<Map::iterator, bool> ret = _file_map.insert(value);
@@ -144,7 +143,7 @@ void LocalSnapshotMetaTable::list_files(std::vector<std::string>* files) const {
     }
 }
 
-int LocalSnapshotMetaTable::get_file_meta(const std::string& filename, 
+int LocalSnapshotMetaTable::get_file_meta(const std::string& filename,
                                           LocalFileMeta* file_meta) const {
     Map::const_iterator iter = _file_map.find(filename);
     if (iter == _file_map.end()) {
@@ -162,7 +161,7 @@ void LocalSnapshot::list_files(std::vector<std::string> *files) {
     return _meta_table.list_files(files);
 }
 
-int LocalSnapshot::get_file_meta(const std::string& filename, 
+int LocalSnapshot::get_file_meta(const std::string& filename,
                                        ::google::protobuf::Message* file_meta) {
     LocalFileMeta* meta = NULL;
     if (file_meta) {
@@ -189,7 +188,7 @@ int LocalSnapshotWriter::init() {
         return EIO;
     }
     std::string meta_path = _path + "/" BRAFT_SNAPSHOT_META_FILE;
-    if (_fs->path_exists(meta_path) && 
+    if (_fs->path_exists(meta_path) &&
                 _meta_table.load_from_file(_fs, meta_path) != 0) {
         set_error(EIO, "Fail to load metatable from %s", meta_path.c_str());
         return EIO;
@@ -206,7 +205,7 @@ int LocalSnapshotWriter::remove_file(const std::string& filename) {
 }
 
 int LocalSnapshotWriter::add_file(
-        const std::string& filename, 
+        const std::string& filename,
         const ::google::protobuf::Message* file_meta) {
     // TODO: normalize filename
     LocalFileMeta meta;
@@ -221,7 +220,7 @@ void LocalSnapshotWriter::list_files(std::vector<std::string> *files) {
     return _meta_table.list_files(files);
 }
 
-int LocalSnapshotWriter::get_file_meta(const std::string& filename, 
+int LocalSnapshotWriter::get_file_meta(const std::string& filename,
                                        ::google::protobuf::Message* file_meta) {
     LocalFileMeta* meta = NULL;
     if (file_meta) {
@@ -295,7 +294,7 @@ void LocalSnapshotReader::list_files(std::vector<std::string> *files) {
     return _meta_table.list_files(files);
 }
 
-int LocalSnapshotReader::get_file_meta(const std::string& filename, 
+int LocalSnapshotReader::get_file_meta(const std::string& filename,
                                        ::google::protobuf::Message* file_meta) {
     LocalFileMeta* meta = NULL;
     if (file_meta) {
@@ -367,7 +366,7 @@ public:
         return LocalDirReader::read_file_with_meta(
                 out, filename, &file_meta, offset, new_max_count, read_count, is_eof);
     }
-   
+
 private:
     LocalSnapshotMetaTable _meta_table;
     scoped_refptr<SnapshotThrottle> _snapshot_throttle;
@@ -644,7 +643,7 @@ SnapshotReader* LocalSnapshotStorage::open() {
         lck.unlock();
         std::string snapshot_path(_path);
         butil::string_appendf(&snapshot_path, "/" BRAFT_SNAPSHOT_PATTERN, last_snapshot_index);
-        LocalSnapshotReader* reader = new LocalSnapshotReader(snapshot_path, _addr, 
+        LocalSnapshotReader* reader = new LocalSnapshotReader(snapshot_path, _addr,
                 _fs.get(), _snapshot_throttle.get());
         if (reader->init() != 0) {
             CHECK(!lck.owns_lock());
@@ -691,7 +690,7 @@ SnapshotStorage* LocalSnapshotStorage::new_instance(const std::string& uri) cons
 
 // LocalSnapshotCopier
 
-LocalSnapshotCopier::LocalSnapshotCopier() 
+LocalSnapshotCopier::LocalSnapshotCopier()
     : _tid(INVALID_BTHREAD)
     , _cancelled(false)
     , _filter_before_copy_remote(false)
@@ -730,10 +729,18 @@ void LocalSnapshotCopier::copy() {
         }
     } while (0);
     if (!ok() && _writer && _writer->ok()) {
-        _writer->set_error(error_code(), error_data());
+        LOG(WARNING) << "Fail to copy, err_code: " << error_code()
+            << ", err_msg: " << error_cstr()
+            << ", writer path: " << _writer->get_path();
+        _writer->set_error(error_code(), error_cstr());
     }
     if (_writer) {
-        _storage->close(_writer, _filter_before_copy_remote);
+        // set_error for copier only when failed to close writer and copier was
+        // ok before this moment
+        if (_storage->close(_writer, _filter_before_copy_remote) != 0
+                && ok()) {
+            set_error(EIO, "Fail to close writer");
+        }
         _writer = NULL;
     }
     if (ok()) {
@@ -759,7 +766,7 @@ void LocalSnapshotCopier::load_meta_table() {
     lck.unlock();
     if (!session->status().ok()) {
         LOG(WARNING) << "Fail to copy meta file : " << session->status();
-        set_error(session->status().error_code(), session->status().error_data());
+        set_error(session->status().error_code(), session->status().error_cstr());
         return;
     }
     if (_remote_snapshot._meta_table.load_from_iobuf_as_remote(meta_buf) != 0) {
@@ -770,7 +777,7 @@ void LocalSnapshotCopier::load_meta_table() {
     CHECK(_remote_snapshot._meta_table.has_meta());
 }
 
-int LocalSnapshotCopier::filter_before_copy(LocalSnapshotWriter* writer, 
+int LocalSnapshotCopier::filter_before_copy(LocalSnapshotWriter* writer,
                                             SnapshotReader* last_snapshot) {
     std::vector<std::string> existing_files;
     writer->list_files(&existing_files);
@@ -911,7 +918,7 @@ void LocalSnapshotCopier::copy_file(const std::string& filename) {
         if (!rc) {
             LOG(ERROR) << "Fail to create directory for " << file_path
                        << " : " << butil::File::ErrorToString(e);
-            set_error(file_error_to_os_error(e), 
+            set_error(file_error_to_os_error(e),
                       "Fail to create directory");
         }
     }
@@ -936,7 +943,7 @@ void LocalSnapshotCopier::copy_file(const std::string& filename) {
     _cur_session = NULL;
     lck.unlock();
     if (!session->status().ok()) {
-        set_error(session->status().error_code(), session->status().error_data());
+        set_error(session->status().error_code(), session->status().error_cstr());
         return;
     }
     if (_writer->add_file(filename, &meta) != 0) {
