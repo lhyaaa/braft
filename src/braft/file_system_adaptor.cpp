@@ -1,11 +1,11 @@
 // Copyright (c) 2017 Baidu.com, Inc. All Rights Reserved
-// 
+//
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-// 
+//
 //     http://www.apache.org/licenses/LICENSE-2.0
-// 
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -37,7 +37,6 @@ const char* PosixDirReader::name() const {
 }
 
 PosixFileAdaptor::~PosixFileAdaptor() {
-    ::close(_fd);
 }
 
 ssize_t PosixFileAdaptor::write(const butil::IOBuf& data, off_t offset) {
@@ -57,6 +56,15 @@ bool PosixFileAdaptor::sync() {
     return raft_fsync(_fd) == 0;
 }
 
+bool PosixFileAdaptor::close() {
+    if (_fd > 0) {
+        bool res = ::close(_fd) == 0;
+        _fd = -1;
+        return res;
+    }
+    return true;
+}
+
 static pthread_once_t s_check_cloexec_once = PTHREAD_ONCE_INIT;
 static bool s_support_cloexec_on_open = false;
 
@@ -68,7 +76,7 @@ static void check_cloexec(void) {
     }
 }
 
-FileAdaptor* PosixFileSystemAdaptor::open(const std::string& path, int oflag, 
+FileAdaptor* PosixFileSystemAdaptor::open(const std::string& path, int oflag,
                                      const ::google::protobuf::Message* file_meta,
                                      butil::File::Error* e) {
     (void) file_meta;
@@ -103,7 +111,7 @@ bool PosixFileSystemAdaptor::link(const std::string& old_path, const std::string
     return ::link(old_path.c_str(), new_path.c_str()) == 0;
 }
 
-bool PosixFileSystemAdaptor::create_directory(const std::string& path, 
+bool PosixFileSystemAdaptor::create_directory(const std::string& path,
                                          butil::File::Error* error,
                                          bool create_parent_directories) {
     butil::FilePath dir(path);
@@ -125,14 +133,14 @@ DirReader* PosixFileSystemAdaptor::directory_reader(const std::string& path) {
 }
 
 FileSystemAdaptor* default_file_system() {
-    static scoped_refptr<PosixFileSystemAdaptor> fs = 
+    static scoped_refptr<PosixFileSystemAdaptor> fs =
         butil::get_leaky_singleton<PosixFileSystemAdaptor>();
     return fs.get();
 }
 
 int file_error_to_os_error(butil::File::Error e) {
     switch (e) {
-        case butil::File::FILE_OK: 
+        case butil::File::FILE_OK:
             return 0;
         case butil::File::FILE_ERROR_ACCESS_DENIED:
             return EACCES;

@@ -1,11 +1,11 @@
 // Copyright (c) 2017 Baidu.com, Inc. All Rights Reserved
-// 
+//
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-// 
+//
 //     http://www.apache.org/licenses/LICENSE-2.0
-// 
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -27,8 +27,8 @@
 #include "braft/util.h"
 #include "braft/fsync.h"
 
-#ifndef O_CLOEXEC  
-#define O_CLOEXEC   02000000    /*  define close_on_exec if not defined in fcntl.h*/  
+#ifndef O_CLOEXEC
+#define O_CLOEXEC   02000000    /*  define close_on_exec if not defined in fcntl.h*/
 #endif
 
 namespace braft {
@@ -56,12 +56,13 @@ private:
 
 template <typename T>
 struct DestroyObj {
-    void operator()(T* const obj) { obj->destroy(); }
+    void operator()(T* const obj) { obj->close(); delete obj; }
 };
 
 
 class FileAdaptor {
 public:
+    virtual ~FileAdaptor() {}
     // Write to the file. Different from posix ::pwrite(), write will retry automatically
     // when occur EINTR.
     // Return |data.size()| if successful, -1 otherwise.
@@ -79,13 +80,11 @@ public:
     // Sync data of the file to disk device
     virtual bool sync() = 0;
 
-    // Destroy this adaptor
-    virtual void destroy() { delete this; }
+    // Close the descriptor of this file adaptor
+    virtual bool close() { return true; }
 
 protected:
-
     FileAdaptor() {}
-    virtual ~FileAdaptor() {}
 
 private:
     DISALLOW_COPY_AND_ASSIGN(FileAdaptor);
@@ -97,14 +96,14 @@ public:
     virtual ~FileSystemAdaptor() {}
 
     // Open a file, oflag can be any valid combination of flags used by posix ::open(),
-    // file_meta can be used to pass additinal metadata, it won't be modified, and should 
+    // file_meta can be used to pass additinal metadata, it won't be modified, and should
     // be valid until the file is destroyed.
-    virtual FileAdaptor* open(const std::string& path, int oflag, 
+    virtual FileAdaptor* open(const std::string& path, int oflag,
                               const ::google::protobuf::Message* file_meta,
                               butil::File::Error* e) = 0;
 
     // Deletes the given path, whether it's a file or a directory. If it's a directory,
-    // it's perfectly happy to delete all of the directory's contents. Passing true to 
+    // it's perfectly happy to delete all of the directory's contents. Passing true to
     // recursive deletes subdirectories and their contents as well.
     // Returns true if successful, false otherwise. It is considered successful
     // to attempt to delete a file that does not exist.
@@ -118,8 +117,8 @@ public:
 
     // Creates a directory. If create_parent_directories is true, parent directories
     // will be created if not exist, otherwise, the create operation will fail.
-    // Returns 'true' on successful creation, or if the directory already exists. 
-    virtual bool create_directory(const std::string& path, 
+    // Returns 'true' on successful creation, or if the directory already exists.
+    virtual bool create_directory(const std::string& path,
                                   butil::File::Error* error,
                                   bool create_parent_directories) = 0;
 
@@ -136,7 +135,7 @@ public:
     // This method will be called at the very begin before read snapshot file.
     // The default implemention is return 'true' directly.
     virtual bool open_snapshot(const std::string& /*snapshot_path*/) { return true; }
-    
+
     // This method will be called after read all snapshot files or failed.
     // The default implemention is return directly.
     virtual void close_snapshot(const std::string& /*snapshot_path*/) {}
@@ -177,6 +176,7 @@ public:
     virtual ssize_t read(butil::IOPortal* portal, off_t offset, size_t size);
     virtual ssize_t size();
     virtual bool sync();
+    virtual bool close();
 
 protected:
     PosixFileAdaptor(int fd) : _fd(fd) {}
@@ -190,13 +190,13 @@ public:
     PosixFileSystemAdaptor() {}
     virtual ~PosixFileSystemAdaptor() {}
 
-    virtual FileAdaptor* open(const std::string& path, int oflag, 
+    virtual FileAdaptor* open(const std::string& path, int oflag,
                               const ::google::protobuf::Message* file_meta,
                               butil::File::Error* e);
     virtual bool delete_file(const std::string& path, bool recursive);
     virtual bool rename(const std::string& old_path, const std::string& new_path);
     virtual bool link(const std::string& old_path, const std::string& new_path);
-    virtual bool create_directory(const std::string& path, 
+    virtual bool create_directory(const std::string& path,
                                   butil::File::Error* error,
                                   bool create_parent_directories);
     virtual bool path_exists(const std::string& path);
