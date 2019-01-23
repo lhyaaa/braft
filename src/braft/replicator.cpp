@@ -84,13 +84,8 @@ Replicator::Replicator()
 Replicator::~Replicator() {
     // bind lifecycle with node, Release
     // Replicator stop is async
-    if (_reader) {
-        _options.snapshot_storage->close(_reader);
-        _reader = NULL;
-        if (_options.snapshot_throttle) {
-            _options.snapshot_throttle->finish_one_task(true);
-        }
-    }
+    _close_reader();
+
     if (_options.node) {
         _options.node->Release();
         _options.node = NULL;
@@ -695,10 +690,10 @@ void Replicator::_install_snapshot() {
     }
 
     _reader = _options.snapshot_storage->open();
-    if (!_reader){
+    if (!_reader) {
         if (_options.snapshot_throttle) {
             _options.snapshot_throttle->finish_one_task(true);
-	}
+        }
         NodeImpl *node_impl = _options.node;
         node_impl->AddRef();
         CHECK_EQ(0, bthread_id_unlock(_id)) << "Fail to unlock " << _id;
@@ -715,8 +710,9 @@ void Replicator::_install_snapshot() {
     // user defined and may need some control logic when opened
     if (uri.empty()) {
         LOG(WARNING) << "node " << _options.group_id << ":" << _options.server_id
-		    << " refuse to send InstallSnapshotRequest to " << _options.peer_id
-		    << " because snapshot uri is empty";
+            << " refuse to send InstallSnapshotRequest to " << _options.peer_id
+            << " because snapshot uri is empty";
+        _close_reader();
         return _block(butil::gettimeofday_us(), EBUSY);
     }
     SnapshotMeta meta;
@@ -1147,6 +1143,16 @@ void Replicator::describe(ReplicatorId id, std::ostream& os, bool use_html) {
     }
     // dummy_id is unlock in _describe
     return r->_describe(os, use_html);
+}
+
+void Replicator::_close_reader() {
+    if (_reader) {
+        _options.snapshot_storage->close(_reader);
+        _reader = NULL;
+        if (_options.snapshot_throttle) {
+            _options.snapshot_throttle->finish_one_task(true);
+        }
+    }
 }
 
 // ==================== ReplicatorGroup ==========================
