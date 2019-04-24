@@ -1,11 +1,11 @@
 // Copyright (c) 2015 Baidu.com, Inc. All Rights Reserved
-// 
+//
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-// 
+//
 //     http://www.apache.org/licenses/LICENSE-2.0
-// 
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -25,6 +25,7 @@
 namespace braft {
 
 class NodeImpl;
+class RaftService;
 
 class NodeManager {
 public:
@@ -42,13 +43,13 @@ public:
     scoped_refptr<NodeImpl> get(const GroupId& group_id, const PeerId& peer_id);
 
     // get all the nodes of |group_id|
-    void get_nodes_by_group_id(const GroupId& group_id, 
+    void get_nodes_by_group_id(const GroupId& group_id,
                                std::vector<scoped_refptr<NodeImpl> >* nodes);
 
     void get_all_nodes(std::vector<scoped_refptr<NodeImpl> >* nodes);
 
     // Add service to |server| at |listen_addr|
-    int add_service(brpc::Server* server, 
+    int add_service(brpc::Server* server,
                     const butil::EndPoint& listen_addr);
 
     // Return true if |addr| is reachable by a RPC Server
@@ -57,12 +58,15 @@ public:
     // Remove the addr from _addr_set when the backing service is destroyed
     void remove_address(butil::EndPoint addr);
 
+    RaftService* raft_service() const {
+        return _raft_service;
+    }
 private:
     NodeManager();
     ~NodeManager();
     DISALLOW_COPY_AND_ASSIGN(NodeManager);
     friend struct DefaultSingletonTraits<NodeManager>;
-    
+
     // TODO(chenzhangyi01): replace std::map with FlatMap
     // To make implementation simplicity, we use two maps here, although
     // it works practically with only one GroupMap
@@ -80,6 +84,8 @@ private:
 
     raft_mutex_t _mutex;
     std::set<butil::EndPoint> _addr_set;
+
+    RaftService* _raft_service;
 };
 
 }   //  namespace braft

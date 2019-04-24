@@ -1,11 +1,11 @@
 // Copyright (c) 2015 Baidu.com, Inc. All Rights Reserved
-// 
+//
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-// 
+//
 //     http://www.apache.org/licenses/LICENSE-2.0
-// 
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -109,7 +109,7 @@ void RaftServiceImpl::append_entries(google::protobuf::RpcController* cntl_base,
         return;
     }
 
-    return node->handle_append_entries_request(cntl, request, response, 
+    return node->handle_append_entries_request(cntl, request, response,
                                                done_guard.release());
 }
 
@@ -166,4 +166,60 @@ void RaftServiceImpl::timeout_now(::google::protobuf::RpcController* controller,
     node->handle_timeout_now_request(cntl, request, response, done);
 }
 
+} // namespace braft
+
+namespace raft {
+
+void NRaftServiceImpl::pre_vote(google::protobuf::RpcController* controller,
+                          const RequestVoteRequest* request,
+                          RequestVoteResponse* response,
+                          google::protobuf::Closure* done) {
+    braft::NodeManager::GetInstance()->raft_service()
+        ->pre_vote(controller,
+                (braft::RequestVoteRequest*)request,
+                (braft::RequestVoteResponse*)response,
+                done);
 }
+
+void NRaftServiceImpl::request_vote(google::protobuf::RpcController* controller,
+                          const RequestVoteRequest* request,
+                          RequestVoteResponse* response,
+                          google::protobuf::Closure* done) {
+    braft::NodeManager::GetInstance()->raft_service()
+        ->request_vote(controller,
+                (braft::RequestVoteRequest*)request,
+                (braft::RequestVoteResponse*)response,
+                done);
+}
+
+void NRaftServiceImpl::append_entries(google::protobuf::RpcController* controller,
+                            const AppendEntriesRequest* request,
+                            AppendEntriesResponse* response,
+                            google::protobuf::Closure* done) {
+    braft::NodeManager::GetInstance()->raft_service()
+        ->append_entries(controller,
+                (braft::AppendEntriesRequest*)request,
+                (braft::AppendEntriesResponse*)response,
+                done);
+}
+void NRaftServiceImpl::install_snapshot(google::protobuf::RpcController* controller,
+                              const InstallSnapshotRequest* request,
+                              InstallSnapshotResponse* response,
+                              google::protobuf::Closure* done) {
+    braft::NodeManager::GetInstance()->raft_service()
+        ->install_snapshot(controller,
+                (braft::InstallSnapshotRequest*)request,
+                (braft::InstallSnapshotResponse*)response,
+                done);
+}
+void NRaftServiceImpl::timeout_now(::google::protobuf::RpcController* controller,
+                 const TimeoutNowRequest* request,
+                 TimeoutNowResponse* response,
+                 ::google::protobuf::Closure* done) {
+    braft::NodeManager::GetInstance()->raft_service()
+        ->timeout_now(controller,
+                (braft::TimeoutNowRequest*)request,
+                (braft::TimeoutNowResponse*)response,
+                done);
+}
+} //namespace raft
