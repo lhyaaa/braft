@@ -27,7 +27,8 @@ public:
     SaveSnapshotDone(SnapshotExecutor* node, SnapshotWriter* writer, Closure* done);
     virtual ~SaveSnapshotDone();
 
-    SnapshotWriter* start(const SnapshotMeta& meta);
+    SnapshotWriter* writer() const;
+    void set_meta(const SnapshotMeta& meta);
     virtual void Run();
 
 private:
@@ -135,17 +136,17 @@ void SnapshotExecutor::do_snapshot(Closure* done) {
         }
         return;
     }
-    if (_fsm_caller->last_applied_index() == _last_snapshot_index) {
-        // There might be false positive as the last_applied_index() is being
-        // updated. But it's fine since we will do next snapshot saving in a
-        // predictable time.
-        lck.unlock();
-        _log_manager->clear_bufferred_logs();
-        if (done) {
-            run_closure_in_bthread(done, _usercode_in_pthread);
-        }
-        return;
-    }
+    // if (_fsm_caller->last_applied_index() == _last_snapshot_index) {
+    //     // There might be false positive as the last_applied_index() is being
+    //     // updated. But it's fine since we will do next snapshot saving in a
+    //     // predictable time.
+    //     lck.unlock();
+    //     _log_manager->clear_bufferred_logs();
+    //     if (done) {
+    //         run_closure_in_bthread(done, _usercode_in_pthread);
+    //     }
+    //     return;
+    // }
     SnapshotWriter* writer = _snapshot_storage->create();
     if (!writer) {
         lck.unlock();
@@ -278,9 +279,12 @@ SaveSnapshotDone::~SaveSnapshotDone() {
     }
 }
 
-SnapshotWriter* SaveSnapshotDone::start(const SnapshotMeta& meta) {
-    _meta = meta;
+SnapshotWriter* SaveSnapshotDone::writer() const {
     return _writer;
+}
+
+void SaveSnapshotDone::set_meta(const SnapshotMeta& meta) {
+    _meta = meta;
 }
 
 void* SaveSnapshotDone::continue_run(void* arg) {

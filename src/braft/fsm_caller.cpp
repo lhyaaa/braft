@@ -304,13 +304,29 @@ int FSMCaller::on_snapshot_save(SaveSnapshotClosure* done) {
 void FSMCaller::do_snapshot_save(SaveSnapshotClosure* done) {
     CHECK(done);
 
-    int64_t last_applied_index = _last_applied_index.load(butil::memory_order_relaxed);
+    SnapshotWriter* writer = done->writer();
+    if (!writer) {
+        done->status().set_error(EINVAL, "snapshot_storage create SnapshotWriter failed");
+        done->Run();
+        return;
+    }
+
+    _fsm->on_snapshot_save(writer, done);
+    if (!done->status().ok()) {
+        done->Run();
+        return;
+    }
+    int64_t last_included_index = done->snapshot_index();
+    if (last_included_index == 0) {
+        last_included_index = _last_applied_index.load(butil::memory_order_relaxed);
+    }
 
     SnapshotMeta meta;
-    meta.set_last_included_index(last_applied_index);
-    meta.set_last_included_term(_last_applied_term);
+    meta.set_last_included_index(last_included_index);
+    meta.set_last_included_term(
+            _log_manager->get_term(last_included_index));
     ConfigurationEntry conf_entry;
-    _log_manager->get_configuration(last_applied_index, &conf_entry);
+    _log_manager->get_configuration(last_included_index, &conf_entry);
     for (Configuration::const_iterator
             iter = conf_entry.conf.begin();
             iter != conf_entry.conf.end(); ++iter) {
@@ -321,15 +337,7 @@ void FSMCaller::do_snapshot_save(SaveSnapshotClosure* done) {
             iter != conf_entry.old_conf.end(); ++iter) {
         *meta.add_old_peers() = iter->to_string();
     }
-
-    SnapshotWriter* writer = done->start(meta);
-    if (!writer) {
-        done->status().set_error(EINVAL, "snapshot_storage create SnapshotWriter failed");
-        done->Run();
-        return;
-    }
-
-    _fsm->on_snapshot_save(writer, done);
+    done->set_meta(meta);
     return;
 }
 

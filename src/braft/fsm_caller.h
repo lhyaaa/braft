@@ -32,6 +32,7 @@ namespace braft {
 class NodeImpl;
 class LogManager;
 class StateMachine;
+class SaveSnapshotClosure;
 class SnapshotMeta;
 class OnErrorClousre;
 struct LogEntry;
@@ -88,12 +89,6 @@ struct FSMCallerOptions {
     NodeImpl* node;
     bool usercode_in_pthread;
     LogId bootstrap_id;
-};
-
-class SaveSnapshotClosure : public Closure {
-public:
-    // TODO: comments
-    virtual SnapshotWriter* start(const SnapshotMeta& meta) = 0;
 };
 
 class LoadSnapshotClosure : public Closure {
