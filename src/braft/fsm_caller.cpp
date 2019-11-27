@@ -311,33 +311,9 @@ void FSMCaller::do_snapshot_save(SaveSnapshotClosure* done) {
         return;
     }
 
+    done->set_snapshot_index(_last_applied_index.load(butil::memory_order_relaxed));
     _fsm->on_snapshot_save(writer, done);
-    if (!done->status().ok()) {
-        done->Run();
-        return;
-    }
-    int64_t last_included_index = done->snapshot_index();
-    if (last_included_index == 0) {
-        last_included_index = _last_applied_index.load(butil::memory_order_relaxed);
-    }
 
-    SnapshotMeta meta;
-    meta.set_last_included_index(last_included_index);
-    meta.set_last_included_term(
-            _log_manager->get_term(last_included_index));
-    ConfigurationEntry conf_entry;
-    _log_manager->get_configuration(last_included_index, &conf_entry);
-    for (Configuration::const_iterator
-            iter = conf_entry.conf.begin();
-            iter != conf_entry.conf.end(); ++iter) {
-        *meta.add_peers() = iter->to_string();
-    }
-    for (Configuration::const_iterator
-            iter = conf_entry.old_conf.begin();
-            iter != conf_entry.old_conf.end(); ++iter) {
-        *meta.add_old_peers() = iter->to_string();
-    }
-    done->set_meta(meta);
     return;
 }
 

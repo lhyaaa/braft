@@ -27,7 +27,7 @@
 #define BRAFT_VLOG_IF(cond)  VLOG_IF(89, (cond))
 #define BRAFT_VPLOG_IF(cond) VPLOG_IF(89, (cond))
 
-//#define USE_BTHREAD_MUTEX
+#define USE_BTHREAD_MUTEX
 
 #ifdef USE_BTHREAD_MUTEX
 
@@ -44,7 +44,7 @@ namespace braft {
 typedef ::butil::Mutex raft_mutex_t;
 }  // namespace braft
 
-#endif  // USE_BTHREAD_MUTEX
+#endif  // USE_PTHREAD_MUTEX
 
 #ifdef UNIT_TEST
 #define BRAFT_MOCK virtual

@@ -28,7 +28,7 @@ public:
     virtual ~SaveSnapshotDone();
 
     SnapshotWriter* writer() const;
-    void set_meta(const SnapshotMeta& meta);
+    void set_meta();
     virtual void Run();
 
 private:
@@ -177,7 +177,7 @@ int SnapshotExecutor::on_snapshot_save_done(
     // InstallSnapshot can break SaveSnapshot, check InstallSnapshot when SaveSnapshot
     // because upstream Snapshot maybe newer than local Snapshot.
     if (st.ok()) {
-        if (meta.last_included_index() <= _last_snapshot_index) {
+        if (meta.last_included_index() < _last_snapshot_index) {
             ret = ESTALE;
             LOG_IF(WARNING, _node != NULL) << "node " << _node->node_id()
                 << " discards an stale snapshot "
@@ -283,13 +283,31 @@ SnapshotWriter* SaveSnapshotDone::writer() const {
     return _writer;
 }
 
-void SaveSnapshotDone::set_meta(const SnapshotMeta& meta) {
-    _meta = meta;
+void SaveSnapshotDone::set_meta() {
+    const int64_t last_included_index = snapshot_index();
+    _meta.set_last_included_index(last_included_index);
+    _meta.set_last_included_term(
+            _se->_log_manager->get_term(last_included_index));
+    ConfigurationEntry conf_entry;
+    _se->_log_manager->get_configuration(last_included_index, &conf_entry);
+    for (Configuration::const_iterator
+            iter = conf_entry.conf.begin();
+            iter != conf_entry.conf.end(); ++iter) {
+        *_meta.add_peers() = iter->to_string();
+    }
+    for (Configuration::const_iterator
+            iter = conf_entry.old_conf.begin();
+            iter != conf_entry.old_conf.end(); ++iter) {
+        *_meta.add_old_peers() = iter->to_string();
+    }
 }
 
 void* SaveSnapshotDone::continue_run(void* arg) {
     SaveSnapshotDone* self = (SaveSnapshotDone*)arg;
     std::unique_ptr<SaveSnapshotDone> self_guard(self);
+    if (self->status().ok()) {
+        self->set_meta();
+    }
     // Must call on_snapshot_save_done to clear _saving_snapshot
     int ret = self->_se->on_snapshot_save_done(
         self->status(), self->_meta, self->_writer);

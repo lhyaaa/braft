@@ -190,7 +190,6 @@ class SaveSnapshotClosure : public Closure {
 public:
     SaveSnapshotClosure() : _index(0) { }
     virtual SnapshotWriter* writer() const = 0;
-    virtual void set_meta(const SnapshotMeta& meta) = 0;
 
     void set_snapshot_index(int64_t index) {
         _index = index;
