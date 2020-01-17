@@ -136,17 +136,17 @@ void SnapshotExecutor::do_snapshot(Closure* done) {
         }
         return;
     }
-    // if (_fsm_caller->last_applied_index() == _last_snapshot_index) {
-    //     // There might be false positive as the last_applied_index() is being
-    //     // updated. But it's fine since we will do next snapshot saving in a
-    //     // predictable time.
-    //     lck.unlock();
-    //     _log_manager->clear_bufferred_logs();
-    //     if (done) {
-    //         run_closure_in_bthread(done, _usercode_in_pthread);
-    //     }
-    //     return;
-    // }
+    if (_fsm_caller->last_applied_index() == _last_snapshot_index) {
+        // There might be false positive as the last_applied_index() is being
+        // updated. But it's fine since we will do next snapshot saving in a
+        // predictable time.
+        lck.unlock();
+        _log_manager->clear_bufferred_logs();
+        if (done) {
+            run_closure_in_bthread(done, _usercode_in_pthread);
+        }
+        return;
+    }
     SnapshotWriter* writer = _snapshot_storage->create();
     if (!writer) {
         lck.unlock();
@@ -286,8 +286,9 @@ SnapshotWriter* SaveSnapshotDone::writer() const {
 void SaveSnapshotDone::set_meta() {
     const int64_t last_included_index = snapshot_index();
     _meta.set_last_included_index(last_included_index);
-    _meta.set_last_included_term(
-            _se->_log_manager->get_term(last_included_index));
+    const int64_t last_included_term = _se->_log_manager->get_term(last_included_index);
+    CHECK(last_included_term > 0);
+    _meta.set_last_included_term(last_included_term);
     ConfigurationEntry conf_entry;
     _se->_log_manager->get_configuration(last_included_index, &conf_entry);
     for (Configuration::const_iterator
