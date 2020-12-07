@@ -222,8 +222,6 @@ private:
                 .store(new_timestamp, butil::memory_order_relaxed);
         }
     }
-
-    void _close_reader();
 private:
     struct FlyingAppendEntriesRpc {
         int64_t log_index;
