@@ -223,6 +223,7 @@ private:
         }
     }
 
+    void _close_reader();
 private:
     struct FlyingAppendEntriesRpc {
         int64_t log_index;
