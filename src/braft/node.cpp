@@ -368,8 +368,8 @@ int NodeImpl::bootstrap(const BootstrapOptions& options) {
     }
 
     // Term is not an option since changing it is very dangerous
-    const int64_t boostrap_log_term = options.last_log_index ? 1 : 0;
-    const LogId boostrap_id(options.last_log_index, boostrap_log_term);
+    const int64_t bootstrap_log_term = options.last_log_index ? 1 : 0;
+    const LogId bootstrap_id(options.last_log_index, bootstrap_log_term);
 
     _options.fsm = options.fsm;
     _options.node_owns_fsm = options.node_owns_fsm;
@@ -386,6 +386,11 @@ int NodeImpl::bootstrap(const BootstrapOptions& options) {
         LOG(ERROR) << "Fail to init log_storage from " << _options.log_uri;
         return -1;
     }
+
+    SnapshotMeta snapshot_meta;
+    snapshot_meta.set_last_included_index(bootstrap_id.index);
+    snapshot_meta.set_last_included_term(bootstrap_id.term);
+    _log_manager->set_snapshot(&snapshot_meta);
 
     if (init_meta_storage() != 0) {
         LOG(ERROR) << "Fail to init stable_storage from "
@@ -405,7 +410,7 @@ int NodeImpl::bootstrap(const BootstrapOptions& options) {
         return -1;
     }
 
-    if (options.fsm && init_fsm_caller(boostrap_id) != 0) {
+    if (options.fsm && init_fsm_caller(bootstrap_id) != 0) {
         LOG(ERROR) << "Fail to init fsm_caller";
         return -1;
     }

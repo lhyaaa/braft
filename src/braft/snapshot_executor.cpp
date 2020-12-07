@@ -1,11 +1,11 @@
 // Copyright (c) 2015 Baidu.com, Inc. All Rights Reserved
-// 
+//
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-// 
+//
 //     http://www.apache.org/licenses/LICENSE-2.0
-// 
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -32,9 +32,10 @@ public:
     SaveSnapshotDone(SnapshotExecutor* node, SnapshotWriter* writer, Closure* done);
     virtual ~SaveSnapshotDone();
 
-    SnapshotWriter* start(const SnapshotMeta& meta);
+    SnapshotWriter* writer() const;
+    void set_meta();
     virtual void Run();
- 
+
 private:
     static void* continue_run(void* arg);
 
@@ -193,7 +194,7 @@ int SnapshotExecutor::on_snapshot_save_done(
     // InstallSnapshot can break SaveSnapshot, check InstallSnapshot when SaveSnapshot
     // because upstream Snapshot maybe newer than local Snapshot.
     if (st.ok()) {
-        if (meta.last_included_index() <= _last_snapshot_index) {
+        if (meta.last_included_index() < _last_snapshot_index) {
             ret = ESTALE;
             LOG_IF(WARNING, _node != NULL) << "node " << _node->node_id()
                 << " discards an stale snapshot "
@@ -203,7 +204,7 @@ int SnapshotExecutor::on_snapshot_save_done(
         }
     }
     lck.unlock();
-    
+
     if (ret == 0) {
         if (writer->save_meta(meta)) {
             LOG(WARNING) << "node " << _node->node_id() << " fail to save snapshot";    
@@ -284,8 +285,8 @@ void SnapshotExecutor::on_snapshot_load_done(const butil::Status& st) {
     _running_jobs.signal();
 }
 
-SaveSnapshotDone::SaveSnapshotDone(SnapshotExecutor* se, 
-                                   SnapshotWriter* writer, 
+SaveSnapshotDone::SaveSnapshotDone(SnapshotExecutor* se,
+                                   SnapshotWriter* writer,
                                    Closure* done)
     : _se(se), _writer(writer), _done(done) {
     // here AddRef, SaveSnapshot maybe async
@@ -300,14 +301,36 @@ SaveSnapshotDone::~SaveSnapshotDone() {
     }
 }
 
-SnapshotWriter* SaveSnapshotDone::start(const SnapshotMeta& meta) {
-    _meta = meta;
+SnapshotWriter* SaveSnapshotDone::writer() const {
     return _writer;
+}
+
+void SaveSnapshotDone::set_meta() {
+    const int64_t last_included_index = snapshot_index();
+    _meta.set_last_included_index(last_included_index);
+    const int64_t last_included_term = _se->_log_manager->get_term(last_included_index);
+    CHECK(last_included_term > 0);
+    _meta.set_last_included_term(last_included_term);
+    ConfigurationEntry conf_entry;
+    _se->_log_manager->get_configuration(last_included_index, &conf_entry);
+    for (Configuration::const_iterator
+            iter = conf_entry.conf.begin();
+            iter != conf_entry.conf.end(); ++iter) {
+        *_meta.add_peers() = iter->to_string();
+    }
+    for (Configuration::const_iterator
+            iter = conf_entry.old_conf.begin();
+            iter != conf_entry.old_conf.end(); ++iter) {
+        *_meta.add_old_peers() = iter->to_string();
+    }
 }
 
 void* SaveSnapshotDone::continue_run(void* arg) {
     SaveSnapshotDone* self = (SaveSnapshotDone*)arg;
     std::unique_ptr<SaveSnapshotDone> self_guard(self);
+    if (self->status().ok()) {
+        self->set_meta();
+    }
     // Must call on_snapshot_save_done to clear _saving_snapshot
     int ret = self->_se->on_snapshot_save_done(
         self->status(), self->_meta, self->_writer);
@@ -456,7 +479,7 @@ void SnapshotExecutor::load_downloading_snapshot(DownloadingSnapshot* ds,
     SnapshotReader* reader = _cur_copier->get_reader();
     if (!_cur_copier->ok()) {
         if (_cur_copier->error_code() == EIO) {
-            report_error(_cur_copier->error_code(), 
+            report_error(_cur_copier->error_code(),
                          "%s", _cur_copier->error_cstr());
         }
         if (reader) {
@@ -480,7 +503,7 @@ void SnapshotExecutor::load_downloading_snapshot(DownloadingSnapshot* ds,
         }
         _downloading_snapshot.store(NULL, butil::memory_order_release);
         lck.unlock();
-        ds->cntl->SetFailed(brpc::EINTERNAL, 
+        ds->cntl->SetFailed(brpc::EINTERNAL,
                            "Fail to copy snapshot from %s",
                             ds->request->uri().c_str());
         _running_jobs.signal();
@@ -552,7 +575,7 @@ int SnapshotExecutor::register_downloading_snapshot(DownloadingSnapshot* ds) {
     // A previouse snapshot is under installing, check if this is the same
     // snapshot and resume it, otherwise drop previous snapshot as this one is
     // newer
-    if (m->request->meta().last_included_index() 
+    if (m->request->meta().last_included_index()
             == ds->request->meta().last_included_index()) {
         // m is a retry
         has_saved = true;
@@ -561,7 +584,7 @@ int SnapshotExecutor::register_downloading_snapshot(DownloadingSnapshot* ds) {
         saved = *m;
         *m = *ds;
         rc = 1;
-    } else if (m->request->meta().last_included_index() 
+    } else if (m->request->meta().last_included_index()
             > ds->request->meta().last_included_index()) {
         // |ds| is older
         LOG(WARNING) << "Register failed: is installing a newer one.";
@@ -640,7 +663,7 @@ void SnapshotExecutor::describe(std::ostream&os, bool use_html) {
         //   Cloning Configuration is expansive, since snapshot is not the hot spot,
         //   we think it's fine
     }
-    const DownloadingSnapshot* m = 
+    const DownloadingSnapshot* m =
             _downloading_snapshot.load(butil::memory_order_acquire);
     if (m) {
         request.CopyFrom(*m->request);
@@ -682,7 +705,7 @@ void SnapshotExecutor::join() {
     _running_jobs.wait();
 }
 
-InstallSnapshotDone::InstallSnapshotDone(SnapshotExecutor* se, 
+InstallSnapshotDone::InstallSnapshotDone(SnapshotExecutor* se,
                                          SnapshotReader* reader)
     : _se(se) , _reader(reader) {
     // node not need AddRef, FSMCaller::shutdown will flush running InstallSnapshot task

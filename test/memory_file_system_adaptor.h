@@ -12,7 +12,7 @@
 
 class MemoryDirReader : public braft::DirReader {
 public:
-    MemoryDirReader(const std::vector<std::string>& names) 
+    MemoryDirReader(const std::vector<std::string>& names)
         : _names(names), _pos(0) {}
     virtual ~MemoryDirReader() {}
 
@@ -101,7 +101,6 @@ public:
         return true;
     }
 
-
 private:
     scoped_refptr<TreeNodeImpl> _node_impl;
 };
@@ -117,7 +116,7 @@ public:
 
     virtual ~MemoryFileSystemAdaptor() {}
 
-    braft::FileAdaptor* open(const std::string& path, int oflag, 
+    braft::FileAdaptor* open(const std::string& path, int oflag,
                             const ::google::protobuf::Message* file_meta,
                             butil::File::Error* e) {
         (void) file_meta;
@@ -166,7 +165,7 @@ public:
         return unsafe_delete_file(path, recursive);
     }
 
-    bool rename(const std::string& old_path, 
+    bool rename(const std::string& old_path,
                 const std::string& new_path) {
         std::unique_lock<bthread::Mutex> lck(_mutex);
         butil::FilePath old_p(old_path);
@@ -228,7 +227,7 @@ public:
         return true;
     }
 
-    bool create_directory(const std::string& path, 
+    bool create_directory(const std::string& path,
                           butil::File::Error* error,
                           bool create_parent_directories) {
         std::unique_lock<bthread::Mutex> lck(_mutex);
@@ -293,7 +292,7 @@ private:
             }
             bool found = false;
             std::list<scoped_refptr<TreeNode> >& childs = (*node)->impl->childs;
-            for (std::list<scoped_refptr<TreeNode> >::iterator sub_it = childs.begin(); 
+            for (std::list<scoped_refptr<TreeNode> >::iterator sub_it = childs.begin();
                     sub_it != childs.end(); ++sub_it) {
                 if (i->value() == (*sub_it)->name) {
                     found = true;
@@ -319,7 +318,7 @@ private:
             return false;
         }
         scoped_refptr<TreeNode>& parent_node = *(find_tree_node(p.DirName()));
-        for (std::list<scoped_refptr<TreeNode> >::iterator it = parent_node->impl->childs.begin(); 
+        for (std::list<scoped_refptr<TreeNode> >::iterator it = parent_node->impl->childs.begin();
                 it != parent_node->impl->childs.end(); ++it) {
             if ((*it).get() == node.get()) {
                 parent_node->impl->childs.erase(it);
@@ -331,7 +330,7 @@ private:
     }
 
     scoped_refptr<TreeNode>* create_child(scoped_refptr<TreeNode>& parent,
-                                          const std::string& name, 
+                                          const std::string& name,
                                           bool file) {
         scoped_refptr<TreeNode>* node = NULL;
         parent->impl->childs.push_back(new TreeNode);
@@ -342,7 +341,7 @@ private:
         return node;
     }
 
-    bool unsafe_create_directory(const std::string& path, 
+    bool unsafe_create_directory(const std::string& path,
                                  butil::File::Error* error,
                                  bool create_parent_directories) {
         if (error) {
@@ -375,7 +374,7 @@ private:
             }
             bool found = false;
             std::list<scoped_refptr<TreeNode> >& childs = (*node)->impl->childs;
-            for (std::list<scoped_refptr<TreeNode> >::iterator sub_it = childs.begin(); 
+            for (std::list<scoped_refptr<TreeNode> >::iterator sub_it = childs.begin();
                     sub_it != childs.end(); ++sub_it) {
                 if (i->value() == (*sub_it)->name) {
                     found = true;

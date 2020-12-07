@@ -3,6 +3,8 @@ project(braft C CXX)
 
 SET(CPACK_GENERATOR "DEB")
 SET(CPACK_DEBIAN_PACKAGE_MAINTAINER "braft authors") #required
+set(CMAKE_INCLUDE_PATH "/home/users/lihangyu01/include")
+set(CMAKE_LIBRARY_PATH "/home/users/lihangyu01/lib")
 
 INCLUDE(CPack)
 

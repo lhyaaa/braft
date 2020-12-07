@@ -28,6 +28,7 @@
 namespace braft {
 
 DECLARE_bool(raft_enable_throttle_when_install_snapshot);
+DECLARE_int32(raft_copy_remote_file_timeout_ms);
 
 struct CopyOptions {
     CopyOptions();
@@ -39,7 +40,7 @@ struct CopyOptions {
 inline CopyOptions::CopyOptions()
     : max_retry(3)
     , retry_interval_ms(1000)  // 1s
-    , timeout_ms(10L * 1000)   // 10s
+    , timeout_ms(FLAGS_raft_copy_remote_file_timeout_ms)
 {}
 
 class FileAdaptor;

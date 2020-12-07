@@ -3,9 +3,9 @@
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-// 
+//
 //     http://www.apache.org/licenses/LICENSE-2.0
-// 
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -29,6 +29,7 @@
 #include "braft/configuration.h"
 #include "braft/enum.pb.h"
 #include "braft/errno.pb.h"
+#include "braft/raft.pb.h" // SnapshotMeta
 
 template <typename T> class scoped_refptr;
 
@@ -54,7 +55,7 @@ class Closure : public google::protobuf::Closure {
 public:
     butil::Status& status() { return _st; }
     const butil::Status& status() const { return _st; }
-    
+
 private:
     butil::Status _st;
 };
@@ -97,7 +98,7 @@ inline const char* errortype2str(ErrorType t) {
 }
 
 inline std::ostream& operator<<(std::ostream& os, const Error& e) {
-    os << "{type=" << errortype2str(e.type()) 
+    os << "{type=" << errortype2str(e.type())
        << ", error_code=" << e.status().error_code()
        << ", error_text=`" << e.status().error_cstr()
        << "'}";
@@ -137,12 +138,12 @@ public:
     // Move to the next task.
     void next();
 
-    // Return a unique and monotonically increasing identifier of the current 
+    // Return a unique and monotonically increasing identifier of the current
     // task:
-    //  - Uniqueness guarantees that committed tasks in different peers with 
+    //  - Uniqueness guarantees that committed tasks in different peers with
     //    the same index are always the same and kept unchanged.
-    //  - Monotonicity guarantees that for any index pair i, j (i < j), task 
-    //    at index |i| must be applied before task at index |j| in all the 
+    //  - Monotonicity guarantees that for any index pair i, j (i < j), task
+    //    at index |i| must be applied before task at index |j| in all the
     //    peers from the group.
     int64_t index() const;
 
@@ -157,10 +158,10 @@ public:
     // task no matter this operation succeeds or fails, otherwise the
     // corresponding resources would leak.
     //
-    // If this task is proposed by this Node when it was the leader of this 
-    // group and the leadership has not changed before this point, done() is 
-    // exactly what was passed to Node::apply which may stand for some 
-    // continuation (such as respond to the client) after updating the 
+    // If this task is proposed by this Node when it was the leader of this
+    // group and the leadership has not changed before this point, done() is
+    // exactly what was passed to Node::apply which may stand for some
+    // continuation (such as respond to the client) after updating the
     // StateMachine with the given task. Otherweise done() must be NULL.
     Closure* done() const;
 
@@ -169,10 +170,10 @@ public:
     // batch of tasks or some error has occurred
     bool valid() const;
 
-    // Invoked when some critical error occurred. And we will consider the last 
+    // Invoked when some critical error occurred. And we will consider the last
     // |ntail| tasks (starting from the last iterated one) as not applied. After
-    // this point, no further changes on the StateMachine as well as the Node 
-    // would be allowed and you should try to repair this replica or just drop 
+    // this point, no further changes on the StateMachine as well as the Node
+    // would be allowed and you should try to repair this replica or just drop
     // it.
     //
     // If |st| is not NULL, it should describe the detail of the error.
@@ -187,11 +188,26 @@ friend class FSMCaller;
     IteratorImpl* _impl;
 };
 
+class SaveSnapshotClosure : public Closure {
+public:
+    SaveSnapshotClosure() : _index(0) { }
+    virtual SnapshotWriter* writer() const = 0;
+
+    void set_snapshot_index(int64_t index) {
+        _index = index;
+    }
+    int64_t snapshot_index() const {
+        return _index;
+    }
+private:
+    int64_t _index;
+};
+
 // |StateMachine| is the sink of all the events of a very raft node.
 // Implement a specific StateMachine for your own business logic.
 //
-// NOTE: All the interfaces are not guaranteed to be thread safe and they are 
-// called sequentially, saying that every single operation will block all the 
+// NOTE: All the interfaces are not guaranteed to be thread safe and they are
+// called sequentially, saying that every single operation will block all the
 // following ones.
 class StateMachine {
 public:
@@ -201,7 +217,7 @@ public:
     // through |iterator|.
     //
     // Invoked when one or more tasks that were passed to Node::apply have been
-    // committed to the raft group (quorum of the group peers have received 
+    // committed to the raft group (quorum of the group peers have received
     // those tasks and stored them on the backing storage).
     //
     // Once this function returns to the caller, we will regard all the iterated
@@ -220,7 +236,7 @@ public:
     // success return 0, fail return errno
     // Default: Save nothing and returns error.
     virtual void on_snapshot_save(::braft::SnapshotWriter* writer,
-                                  ::braft::Closure* done);
+                                  ::braft::SaveSnapshotClosure* done);
 
     // user defined snapshot load function
     // get and load snapshot
@@ -246,8 +262,8 @@ public:
     virtual void on_configuration_committed(const ::braft::Configuration& conf, int64_t index);
 
     // this method is called when a follower stops following a leader and its leader_id becomes NULL,
-    // situations including: 
-    // 1. handle election_timeout and start pre_vote 
+    // situations including:
+    // 1. handle election_timeout and start pre_vote
     // 2. receive requests with higher term such as vote_request from a candidate
     // or append_entries_request from a new leader
     // 3. receive timeout_now_request from current leader and start request_vote
@@ -281,7 +297,7 @@ enum State {
 };
 
 inline const char* state2str(State state) {
-    const char* str[] = {"LEADER", "TRANSFERRING", "CANDIDATE", "FOLLOWER", 
+    const char* str[] = {"LEADER", "TRANSFERRING", "CANDIDATE", "FOLLOWER",
                          "ERROR", "UNINITIALIZED", "SHUTTING", "SHUTDOWN", };
     if (state < STATE_END) {
         return str[(int)state - 1];
@@ -302,7 +318,7 @@ class LeaderChangeContext {
 public:
     LeaderChangeContext(const PeerId& leader_id, int64_t term, const butil::Status& status)
         : _leader_id(leader_id)
-        , _term(term) 
+        , _term(term)
         , _st(status)
     {};
     // for on_start_following, the leader_id and term are of the new leader;
@@ -311,7 +327,7 @@ public:
     int64_t term() const { return _term; }
     // return the information about why on_start_following or on_stop_following is called.
     const butil::Status& status() const { return _st; }
-        
+
 private:
     PeerId _leader_id;
     int64_t _term;
@@ -475,7 +491,7 @@ struct LeaderLeaseStatus {
 };
 
 struct NodeOptions {
-    // A follower would become a candidate if it doesn't receive any message 
+    // A follower would become a candidate if it doesn't receive any message
     // from the leader in |election_timeout_ms| milliseconds
     // Default: 1000 (1s)
     int election_timeout_ms; //follower to candidate timeout
@@ -587,7 +603,7 @@ struct NodeOptions {
     NodeOptions();
 };
 
-inline NodeOptions::NodeOptions() 
+inline NodeOptions::NodeOptions()
     : election_timeout_ms(1000)
     , max_clock_drift_ms(1000)
     , snapshot_interval_s(3600)
@@ -645,7 +661,7 @@ public:
     // apply task to the replicated-state-machine
     //
     // About the ownership:
-    // |task.data|: for the performance consideration, we will take away the 
+    // |task.data|: for the performance consideration, we will take away the
     //              content. If you want keep the content, copy it before call
     //              this function
     // |task.done|: If the data is successfully committed to the raft group. We
@@ -727,7 +743,7 @@ public:
     // Otherwise, appropriate errors are returned:
     //     - return ELOGDELETED when the log has been deleted;
     //     - return ENOMOREUSERLOG when we can't get a user log even reaching last_committed_index.
-    // [NOTE] in consideration of safety, we use last_applied_index instead of last_committed_index 
+    // [NOTE] in consideration of safety, we use last_applied_index instead of last_committed_index
     // in code implementation.
     butil::Status read_committed_user_log(const int64_t index, UserLog* user_log);
 
@@ -776,7 +792,7 @@ struct BootstrapOptions {
     // Default: 0
     int64_t last_log_index;
 
-    // The specific StateMachine which is going to dump the first snapshot 
+    // The specific StateMachine which is going to dump the first snapshot
     // If last_log_index isn't 0, fsm must be a valid instance.
     // Default: NULL
     StateMachine* fsm;
@@ -788,7 +804,7 @@ struct BootstrapOptions {
     bool node_owns_fsm;
 
     // Run the user callbacks and user closures in pthread rather than bthread
-    // 
+    //
     // Default: false
     bool usercode_in_pthread;
 
@@ -806,14 +822,14 @@ struct BootstrapOptions {
 
 };
 
-// Bootstrap a non-empty raft node, 
+// Bootstrap a non-empty raft node,
 int bootstrap(const BootstrapOptions& options);
 
 // Attach raft services to |server|, this makes the raft services share the same
 // listening address with the user services.
 //
 // NOTE: Now we only allow the backing Server to be started with a specific
-// listen address, if the Server is going to be started from a range of ports, 
+// listen address, if the Server is going to be started from a range of ports,
 // the behavior is undefined.
 // Returns 0 on success, -1 otherwise.
 int add_service(brpc::Server* server, const butil::EndPoint& listen_addr);

@@ -1,11 +1,11 @@
 // Copyright (c) 2015 Baidu.com, Inc. All Rights Reserved
-// 
+//
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-// 
+//
 //     http://www.apache.org/licenses/LICENSE-2.0
-// 
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -41,13 +41,16 @@ DEFINE_bool(raft_enable_throttle_when_install_snapshot, true,
             "enable throttle when install snapshot, for both leader and follower");
 BRPC_VALIDATE_GFLAG(raft_enable_throttle_when_install_snapshot,
                     ::brpc::PassValidate);
+DEFINE_int32(raft_copy_remote_file_timeout_ms, 10 * 1000 /*10s*/,
+             "timeout of copying remote file when install_snapshot");
+BRPC_VALIDATE_GFLAG(raft_copy_remote_file_timeout_ms, brpc::PositiveInteger);
 
 RemoteFileCopier::RemoteFileCopier()
     : _reader_id(0)
     , _throttle(NULL)
 {}
 
-int RemoteFileCopier::init(const std::string& uri, FileSystemAdaptor* fs, 
+int RemoteFileCopier::init(const std::string& uri, FileSystemAdaptor* fs,
         SnapshotThrottle* throttle) {
     // Parse uri format: remote://ip:port/reader_id
     static const size_t prefix_size = strlen("remote://");
@@ -113,7 +116,7 @@ int RemoteFileCopier::copy_to_file(const std::string& source,
 }
 
 int RemoteFileCopier::copy_to_iobuf(const std::string& source,
-                                    butil::IOBuf* dest_buf, 
+                                    butil::IOBuf* dest_buf,
                                     const CopyOptions* options) {
     scoped_refptr<Session> session = start_to_copy_to_iobuf(
                                         source, dest_buf, options);
@@ -124,16 +127,16 @@ int RemoteFileCopier::copy_to_iobuf(const std::string& source,
     return session->status().error_code();
 }
 
-scoped_refptr<RemoteFileCopier::Session> 
+scoped_refptr<RemoteFileCopier::Session>
 RemoteFileCopier::start_to_copy_to_file(
                       const std::string& source,
                       const std::string& dest_path,
                       const CopyOptions* options) {
     butil::File::Error e;
     FileAdaptor* file = _fs->open(dest_path, O_TRUNC | O_WRONLY | O_CREAT | O_CLOEXEC, NULL, &e);
-    
+
     if (!file) {
-        LOG(ERROR) << "Fail to open " << dest_path 
+        LOG(ERROR) << "Fail to open " << dest_path
                    << ", " << butil::File::ErrorToString(e);
         return NULL;
     }
@@ -155,7 +158,7 @@ RemoteFileCopier::start_to_copy_to_file(
     return session;
 }
 
-scoped_refptr<RemoteFileCopier::Session> 
+scoped_refptr<RemoteFileCopier::Session>
 RemoteFileCopier::start_to_copy_to_iobuf(
                       const std::string& source,
                       butil::IOBuf* dest_buf,
@@ -174,7 +177,7 @@ RemoteFileCopier::start_to_copy_to_iobuf(
     return session;
 }
 
-RemoteFileCopier::Session::Session() 
+RemoteFileCopier::Session::Session()
     : _channel(NULL)
     , _file(NULL)
     , _retry_times(0)
@@ -200,7 +203,7 @@ void RemoteFileCopier::Session::send_next_rpc() {
     _response.Clear();
     // Not clear request as we need some fields of the previous RPC
     off_t offset = _request.offset() + _request.count();
-    const size_t max_count = 
+    const size_t max_count =
             (!_buf) ? FLAGS_raft_max_byte_count_per_rpc : UINT_MAX;
     _cntl.set_timeout_ms(_options.timeout_ms);
     _request.set_offset(offset);
@@ -220,10 +223,10 @@ void RemoteFileCopier::Session::send_next_rpc() {
             BRAFT_VLOG << "Copy file throttled, path: " << _dest_path;
             _request.set_count(0);
             AddRef();
-            int64_t retry_interval_ms_when_throttled = 
+            int64_t retry_interval_ms_when_throttled =
                                     _throttle->get_retry_interval_ms();
             if (bthread_timer_add(
-                    &_timer, 
+                    &_timer,
                     butil::milliseconds_from_now(retry_interval_ms_when_throttled),
                     on_timer, this) != 0) {
                 lck.unlock();
@@ -266,7 +269,7 @@ void RemoteFileCopier::Session::on_rpc_returned() {
             }
         }
         // set retry time interval
-        int64_t retry_interval_ms = _options.retry_interval_ms; 
+        int64_t retry_interval_ms = _options.retry_interval_ms;
         if (_cntl.ErrorCode() == EAGAIN && _throttle) {
             retry_interval_ms = _throttle->get_retry_interval_ms();
             // No token consumed, just return back, other nodes maybe able to use them
@@ -278,7 +281,7 @@ void RemoteFileCopier::Session::on_rpc_returned() {
         }
         AddRef();
         if (bthread_timer_add(
-                    &_timer, 
+                    &_timer,
                     butil::milliseconds_from_now(retry_interval_ms),
                     on_timer, this) != 0) {
             lck.unlock();
@@ -363,7 +366,7 @@ void RemoteFileCopier::Session::on_finished() {
 void RemoteFileCopier::Session::cancel() {
     BAIDU_SCOPED_LOCK(_mutex);
     if (_finished) {
-        return; 
+        return;
     }
     brpc::StartCancel(_rpc_call);
     if (bthread_timer_del(_timer) == 0) {
