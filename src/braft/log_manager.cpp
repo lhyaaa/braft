@@ -40,8 +40,22 @@ static bvar::Adder<int64_t> g_read_term_from_storage
 static bvar::PerSecond<bvar::Adder<int64_t> > g_read_term_from_storage_second
             ("raft_read_term_from_storage_second", &g_read_term_from_storage);
 
-static bvar::LatencyRecorder g_storage_append_entries_latency("raft_storage_append_entries");
-static bvar::LatencyRecorder g_nomralized_append_entries_latency("raft_storage_append_entries_normalized");
+static bvar::LatencyRecorder g_storage_append_entries_latency(
+                                    "raft_storage_append_entries");
+static bvar::LatencyRecorder g_nomralized_append_entries_latency(
+                                    "raft_storage_append_entries_normalized");
+static bvar::Adder<int64_t> g_storage_append_entries_concurrency(
+                                    "raft_storage_append_entries_concurrency");
+
+static bvar::CounterRecorder g_storage_flush_batch_counter(
+                                        "raft_storage_flush_batch_counter");
+
+
+void LogManager::StableClosure::update_metric(IOMetric* m) {
+    metric.open_segment_time_us = m->open_segment_time_us;
+    metric.append_entry_time_us = m->append_entry_time_us;
+    metric.sync_segment_time_us = m->sync_segment_time_us;
+}
 
 LogManagerOptions::LogManagerOptions()
     : log_storage(NULL)
@@ -79,6 +93,8 @@ int LogManager::init(const LogManagerOptions &options) {
     _first_log_index = _log_storage->first_log_index();
     _last_log_index = _log_storage->last_log_index();
     _disk_id.index = _last_log_index;
+    // Term will be 0 if the node has no logs, and we will correct the value
+    // after snapshot load finish.
     _disk_id.term = _log_storage->get_term(_last_log_index);
     _fsm_caller = options.fsm_caller;
     return 0;
@@ -431,7 +447,7 @@ void LogManager::append_entries(
 }
 
 void LogManager::append_to_storage(std::vector<LogEntry*>* to_append, 
-                                   LogId* last_id) {
+                                   LogId* last_id, IOMetric* metric) {
     if (!_has_error.load(butil::memory_order_relaxed)) {
         size_t written_size = 0;
         for (size_t i = 0; i < to_append->size(); ++i) {
@@ -439,13 +455,15 @@ void LogManager::append_to_storage(std::vector<LogEntry*>* to_append,
         }
         butil::Timer timer;
         timer.start();
-        int nappent = _log_storage->append_entries(*to_append);
+        g_storage_append_entries_concurrency << 1;
+        int nappent = _log_storage->append_entries(*to_append, metric);
+        g_storage_append_entries_concurrency << -1;
         timer.stop();
         if (nappent != (int)to_append->size()) {
             // FIXME
             LOG(ERROR) << "Fail to append_entries, "
-                << "nappent=" << nappent 
-                << ", to_append=" << to_append->size();
+                       << "nappent=" << nappent 
+                       << ", to_append=" << to_append->size();
             report_error(EIO, "Fail to append entries");
         }
         if (nappent > 0) { 
@@ -482,13 +500,16 @@ public:
 
     void flush() {
         if (_size > 0) {
-            _lm->append_to_storage(&_to_append, _last_id);
+            IOMetric metric;
+            _lm->append_to_storage(&_to_append, _last_id, &metric);
+            g_storage_flush_batch_counter << _size;
             for (size_t i = 0; i < _size; ++i) {
                 _storage[i]->_entries.clear();
                 if (_lm->_has_error.load(butil::memory_order_relaxed)) {
                     _storage[i]->status().set_error(
                             EIO, "Corrupted LogStorage");
                 }
+                _storage[i]->update_metric(&metric);
                 _storage[i]->Run();
             }
             _to_append.clear();
@@ -526,15 +547,17 @@ int LogManager::disk_thread(void* meta,
     }
 
     LogManager* log_manager = static_cast<LogManager*>(meta);
-    // FXIME(chenzhangyi01): it's buggy
+    // FIXME(chenzhangyi01): it's buggy
     LogId last_id = log_manager->_disk_id;
     StableClosure* storage[256];
     AppendBatcher ab(storage, ARRAY_SIZE(storage), &last_id, log_manager);
     
     for (; iter; ++iter) {
                 // ^^^ Must iterate to the end to release to corresponding
-                //     even if some error has ocurred
+                //     even if some error has occurred
         StableClosure* done = *iter;
+        done->metric.bthread_queue_time_us = butil::cpuwide_time_us() - 
+                                            done->metric.start_time_us;
         if (!done->_entries.empty()) {
             ab.append(done);
         } else {
@@ -563,7 +586,7 @@ int LogManager::disk_thread(void* meta,
                         dynamic_cast<TruncateSuffixClosure*>(done);
                 if (tsc) {
                     LOG(WARNING) << "Truncating storage to last_index_kept="
-                        << tsc->last_index_kept();
+                                 << tsc->last_index_kept();
                     ret = log_manager->_log_storage->truncate_suffix(
                                     tsc->last_index_kept());
                     if (ret == 0) {
@@ -619,29 +642,37 @@ void LogManager::set_snapshot(const SnapshotMeta* meta) {
     _config_manager->set_snapshot(entry);
     int64_t term = unsafe_get_term(meta->last_included_index());
 
-    const int64_t saved_last_snapshot_index = _last_snapshot_id.index;
+    const LogId last_but_one_snapshot_id = _last_snapshot_id;
     _last_snapshot_id.index = meta->last_included_index();
     _last_snapshot_id.term = meta->last_included_term();
     if (_last_snapshot_id > _applied_id) {
         _applied_id = _last_snapshot_id;
     }
+    // NOTICE: not to update disk_id here as we are not sure if this node really
+    // has these logs on disk storage. Just leave disk_id as it was, which can keep
+    // these logs in memory all the time until they are flushed to disk. By this 
+    // way we can avoid some corner cases which failed to get logs.
+    
     if (term == 0) {
         // last_included_index is larger than last_index
         // FIXME: what if last_included_index is less than first_index?
+        _virtual_first_log_id = _last_snapshot_id;
         truncate_prefix(meta->last_included_index() + 1, lck);
         return;
     } else if (term == meta->last_included_term()) {
         // Truncating log to the index of the last snapshot.
-        // We don't truncate log before the lastest snapshot immediately since
+        // We don't truncate log before the latest snapshot immediately since
         // some log around last_snapshot_index is probably needed by some
         // followers
-        if (saved_last_snapshot_index > 0) {
+        if (last_but_one_snapshot_id.index > 0) {
             // We have last snapshot index
-            truncate_prefix(saved_last_snapshot_index + 1, lck);
+            _virtual_first_log_id = last_but_one_snapshot_id;
+            truncate_prefix(last_but_one_snapshot_id.index + 1, lck);
         }
         return;
     } else {
         // TODO: check the result of reset.
+        _virtual_first_log_id = _last_snapshot_id;
         reset(meta->last_included_index() + 1, lck);
         return;
     }
@@ -651,6 +682,7 @@ void LogManager::set_snapshot(const SnapshotMeta* meta) {
 void LogManager::clear_bufferred_logs() {
     std::unique_lock<raft_mutex_t> lck(_mutex);
     if (_last_snapshot_id.index != 0) {
+        _virtual_first_log_id = _last_snapshot_id;
         truncate_prefix(_last_snapshot_id.index + 1, lck);
     }
 }
@@ -672,14 +704,19 @@ int64_t LogManager::unsafe_get_term(const int64_t index) {
     if (index == 0) {
         return 0;
     }
-
-    if (index > _last_log_index) {
-        return 0;
+    // check virtual first log
+    if (index == _virtual_first_log_id.index) {
+        return _virtual_first_log_id.term;
     }
-
-    // check index equal snapshot_index, return snapshot_term
+    // check last_snapshot_id
     if (index == _last_snapshot_id.index) {
         return _last_snapshot_id.term;
+    }
+    // out of range, direct return NULL
+    // check this after check last_snapshot_id, because it is likely that
+    // last_snapshot_id < first_log_index
+    if (index > _last_log_index || index < _first_log_index) {
+        return 0;
     }
 
     LogEntry* entry = get_entry_from_memory(index);
@@ -694,16 +731,20 @@ int64_t LogManager::get_term(const int64_t index) {
     if (index == 0) {
         return 0;
     }
-
     std::unique_lock<raft_mutex_t> lck(_mutex);
-    // out of range, direct return NULL
-    if (index > _last_log_index) {
-        return 0;
+    // check virtual first log
+    if (index == _virtual_first_log_id.index) {
+        return _virtual_first_log_id.term;
     }
-
-    // check index equal snapshot_index, return snapshot_term
+    // check last_snapshot_id
     if (index == _last_snapshot_id.index) {
         return _last_snapshot_id.term;
+    }
+    // out of range, direct return NULL
+    // check this after check last_snapshot_id, because it is likely that
+    // last_snapshot_id < first_log_index
+    if (index > _last_log_index || index < _first_log_index) {
+        return 0;
     }
 
     LogEntry* entry = get_entry_from_memory(index);
@@ -879,6 +920,17 @@ void LogManager::describe(std::ostream& os, bool use_html) {
     os << "disk_index: " << _disk_id.index << newline;
     os << "known_applied_index: " << _applied_id.index << newline;
     os << "last_log_id: " << last_log_id() << newline;
+}
+
+void LogManager::get_status(LogManagerStatus* status) {
+    if (!status) {
+        return;
+    }
+    std::unique_lock<raft_mutex_t> lck(_mutex);
+    status->first_index = _log_storage->first_log_index();
+    status->last_index = _log_storage->last_log_index();
+    status->disk_index = _disk_id.index;
+    status->known_applied_index = _applied_id.index;
 }
 
 void LogManager::report_error(int error_code, const char* fmt, ...) {

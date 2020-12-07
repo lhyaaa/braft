@@ -35,6 +35,14 @@ class BallotBox;
 class NodeImpl;
 class SnapshotThrottle;
 
+// A shared structure to store some high-frequency replicator statuses, for reducing
+// the lock contention between Replicator and NodeImpl.
+struct ReplicatorStatus : public butil::RefCountedThreadSafe<ReplicatorStatus> {
+    butil::atomic<int64_t> last_rpc_send_timestamp;
+
+    ReplicatorStatus() : last_rpc_send_timestamp(0) {}
+};
+
 struct ReplicatorOptions {
     ReplicatorOptions();
     int* dynamic_heartbeat_timeout_ms;
@@ -48,6 +56,7 @@ struct ReplicatorOptions {
     int64_t term;
     SnapshotStorage* snapshot_storage;
     SnapshotThrottle* snapshot_throttle;
+    ReplicatorStatus* replicator_status;
 };
 
 typedef uint64_t ReplicatorId;
@@ -82,8 +91,6 @@ public:
 
     static int join(ReplicatorId);
 
-    static int64_t last_rpc_send_timestamp(ReplicatorId id);
-
     // Wait until the margin between |last_log_index| from leader and the peer
     // is less than |max_margin| or error occurs.
     // |done| can't be NULL and it is called after waiting fnishies.
@@ -107,6 +114,16 @@ public:
 
     static void describe(ReplicatorId id, std::ostream& os, bool use_html);
 
+    // Get replicator internal status.
+    static void get_status(ReplicatorId id, PeerStatus* status);
+
+    // Change the readonly config.
+    // Return 0 if success, the error code otherwise.
+    static int change_readonly_config(ReplicatorId id, bool readonly);
+
+    // Check if a replicator is readonly
+    static bool readonly(ReplicatorId id);
+    
 private:
     enum St {
         IDLE,
@@ -131,7 +148,7 @@ private:
 
     int _prepare_entry(int offset, EntryMeta* em, butil::IOBuf* data);
     void _wait_more_entries();
-    void _send_empty_entries(bool is_hearbeat);
+    void _send_empty_entries(bool is_heartbeat);
     void _send_entries();
     void _notify_on_caught_up(int error_code, bool);
     int _fill_common_fields(AppendEntriesRequest* request, int64_t prev_log_index,
@@ -147,6 +164,7 @@ private:
     int64_t _min_flying_index() {
         return _next_index - _flying_append_entries_size;
     }
+    int _change_readonly_config(bool readonly);
 
     static void _on_rpc_returned(
                 ReplicatorId id, brpc::Controller* cntl,
@@ -181,6 +199,7 @@ private:
                 InstallSnapshotResponse* response);
     void _destroy();
     void _describe(std::ostream& os, bool use_html);
+    void _get_status(PeerStatus* status);
     bool _is_catchup(int64_t max_margin) {
         // We should wait until install snapshot finish. If the process is throttled,
         // it maybe very slow.
@@ -192,6 +211,16 @@ private:
             return false;
         }
         return true;
+    }
+    void _close_reader();
+    int64_t _last_rpc_send_timestamp() {
+        return _options.replicator_status->last_rpc_send_timestamp.load(butil::memory_order_relaxed);
+    }
+    void _update_last_rpc_send_timestamp(int64_t new_timestamp) {
+        if (new_timestamp > _last_rpc_send_timestamp()) {
+            _options.replicator_status->last_rpc_send_timestamp
+                .store(new_timestamp, butil::memory_order_relaxed);
+        }
     }
 
     void _close_reader();
@@ -210,11 +239,10 @@ private:
     int _consecutive_error_times;
     bool _has_succeeded;
     int64_t _timeout_now_index;
-    // the sending time of last successful RPC
-    int64_t _last_rpc_send_timestamp;
     int64_t _heartbeat_counter;
     int64_t _append_entries_counter;
     int64_t _install_snapshot_counter;
+    int64_t _readonly_index;
     Stat _st;
     std::deque<FlyingAppendEntriesRpc> _append_entries_in_fly;
     brpc::CallId _install_snapshot_in_fly;
@@ -260,8 +288,8 @@ public:
     // NOTE: when calling this function, the replicatos starts to work
     // immediately, annd might call node->step_down which might have race with
     // the caller, you should deal with this situation.
-    int add_replicator(const PeerId &peer);
-
+    int add_replicator(const PeerId& peer);
+    
     // wait the very peer catchup
     int wait_caughtup(const PeerId& peer, int64_t max_margin,
                       const timespec* due_time, CatchupClosure* done);
@@ -318,11 +346,25 @@ public:
     // List all the existing replicators
     void list_replicators(std::vector<ReplicatorId>* out) const;
 
+    // List all the existing replicators with PeerId
+    void list_replicators(std::vector<std::pair<PeerId, ReplicatorId> >* out) const;
+
+    // Change the readonly config for a peer
+    int change_readonly_config(const PeerId& peer, bool readonly);
+
+    // Check if a replicator is in readonly
+    bool readonly(const PeerId& peer) const;
+
 private:
 
     int _add_replicator(const PeerId& peer, ReplicatorId *rid);
 
-    std::map<PeerId, ReplicatorId> _rmap;
+    struct ReplicatorIdAndStatus {
+        ReplicatorId id;
+        scoped_refptr<ReplicatorStatus> status;
+    };
+
+    std::map<PeerId, ReplicatorIdAndStatus> _rmap;
     ReplicatorOptions _common_options;
     int _dynamic_timeout_ms;
     int _election_timeout_ms;

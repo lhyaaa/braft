@@ -275,7 +275,7 @@ private:
                 continue;
             } else if (sub_path.BaseName().value() == "..") {
                 ++ignore;
-            } else if (ignore > 0){
+            } else if (ignore > 0) {
                 --ignore;
             } else {
                 subpaths.push_back(sub_path.BaseName());
@@ -357,7 +357,7 @@ private:
                 continue;
             } else if (sub_path.BaseName().value() == "..") {
                 ++ignore;
-            } else if (ignore > 0){
+            } else if (ignore > 0) {
                 --ignore;
             } else {
                 subpaths.push_back(sub_path.BaseName());

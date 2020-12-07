@@ -201,7 +201,7 @@ RemoteFileCopier::Session::~Session() {
 void RemoteFileCopier::Session::send_next_rpc() {
     _cntl.Reset();
     _response.Clear();
-    // Not clear request as we need some fields of the previouse RPC
+    // Not clear request as we need some fields of the previous RPC
     off_t offset = _request.offset() + _request.count();
     const size_t max_count =
             (!_buf) ? FLAGS_raft_max_byte_count_per_rpc : UINT_MAX;
@@ -220,6 +220,7 @@ void RemoteFileCopier::Session::send_next_rpc() {
         new_max_count = _throttle->throttled_by_throughput(max_count);
         if (new_max_count == 0) {
             // Reset count to make next rpc retry the previous one
+            BRAFT_VLOG << "Copy file throttled, path: " << _dest_path;
             _request.set_count(0);
             AddRef();
             int64_t retry_interval_ms_when_throttled =
@@ -351,7 +352,7 @@ void RemoteFileCopier::Session::on_timer(void* arg) {
 void RemoteFileCopier::Session::on_finished() {
     if (!_finished) {
         if (_file) {
-            if (!_file->close()) {
+            if (!_file->sync() || !_file->close()) {
                 _st.set_error(EIO, "%s", berror(EIO));
             }
             delete _file;

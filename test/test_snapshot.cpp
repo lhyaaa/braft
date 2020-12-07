@@ -27,9 +27,54 @@ protected:
     void TearDown() {}
 };
 
+class ReadFileAdaptor : public braft::BufferedSequentialReadFileAdaptor {
+public:
+    ReadFileAdaptor(braft::FileAdaptor* file)
+        : _file(file), _offset(0)
+    {}
+    ~ReadFileAdaptor() {
+        if (_file) {
+            _file->close();
+            delete _file;
+        }
+    }
+    virtual int do_read(butil::IOPortal* portal, size_t need_count, size_t* nread) {
+        ssize_t r = _file->read(portal, _offset, need_count);
+        if (r >= 0) {
+            _offset += r;
+            *nread = r;
+            return 0;
+        }
+        errno = (errno != 0) ? errno : EIO;
+        return -1;
+    }
+
+private:
+    braft::FileAdaptor *_file;
+    off_t _offset;
+};
+
+class SequentialReadFileSystemAdaptor : public braft::PosixFileSystemAdaptor {
+public:
+    SequentialReadFileSystemAdaptor() {}
+
+    virtual braft::FileAdaptor* open(const std::string& path, int oflag, 
+                                    const ::google::protobuf::Message* file_meta,
+                                    butil::File::Error* e) {
+        braft::FileAdaptor* file =
+            braft::PosixFileSystemAdaptor::open(path, oflag, file_meta, e);
+        if (file && (oflag & O_RDONLY)) {
+            return new ReadFileAdaptor(file);
+        } else {
+            return file;
+        }
+    }
+};
+
 #define FOR_EACH_FILE_SYSTEM_ADAPTOR_BEGIN(fs)                                   \
     braft::FileSystemAdaptor* file_system_adaptors[] = {                          \
-        NULL, new braft::PosixFileSystemAdaptor, new MemoryFileSystemAdaptor \
+        NULL, new braft::PosixFileSystemAdaptor, new MemoryFileSystemAdaptor,     \
+        new SequentialReadFileSystemAdaptor,                                     \
     };                                                                           \
     for (size_t fs_index = 0; fs_index != sizeof(file_system_adaptors)           \
          / sizeof(file_system_adaptors[0]); ++fs_index) {                        \
@@ -405,8 +450,15 @@ void add_file_meta(braft::FileSystemAdaptor* fs, braft::SnapshotWriter* writer, 
     if (checksum) {
         file_meta.set_checksum(*checksum);
     }
-    write_file(fs, writer->get_path() + "/" + path.str(), path.str() + data);
+    write_file(fs, writer->get_path() + "/" + path.str(), path.str() + ": " + data);
     ASSERT_EQ(0, writer->add_file(path.str(), &file_meta));
+}
+
+void add_file_without_meta(braft::FileSystemAdaptor* fs, braft::SnapshotWriter* writer, int index, 
+                   const std::string& data) {
+    std::stringstream path;
+    path << "file" << index;
+    write_file(fs, writer->get_path() + "/" + path.str(), path.str() + ": " + data);
 }
 
 bool check_file_exist(braft::FileSystemAdaptor* fs, const std::string& path, int index) {
@@ -522,6 +574,8 @@ TEST_F(SnapshotTest, filter_before_copy) {
     add_file_meta(fs, writer2, 4, &checksum2, data2);
     // file not exist in remote, will delete
     add_file_meta(fs, writer2, 100, &checksum2, data2);
+    // file exit but meta not exit, will delete
+    add_file_without_meta(fs, writer2, 102, data2);
 
     ASSERT_EQ(0, writer2->save_meta(meta));
     ASSERT_EQ(0, storage2->close(writer2));
@@ -537,15 +591,15 @@ TEST_F(SnapshotTest, filter_before_copy) {
     meta.set_last_included_index(901);
     const std::string data3("ccc");
     const std::string checksum3("3");
-    // same checksum, will not copy
+    // same checksum, will copy from last_snapshot with index=901
     add_file_meta(fs, writer2, 6, &checksum1, data3);
-    // remote checksum not set, local set, will copy
+    // remote checksum not set, local last_snapshot set, will copy
     add_file_meta(fs, writer2, 7, &checksum1, data3);
-    // remote checksum set, local not set, will copy
+    // remote checksum set, local last_snapshot not set, will copy
     add_file_meta(fs, writer2, 8, NULL, data3);
-    // different checksum, will copy
+    // remote and local last_snapshot different checksum, will copy
     add_file_meta(fs, writer2, 9, &checksum3, data3);
-    // file not exist in remote, will delete
+    // file not exist in remote, will not copy
     add_file_meta(fs, writer2, 101, &checksum3, data3);
     ASSERT_EQ(0, writer2->save_meta(meta));
     ASSERT_EQ(0, storage2->close(writer2));
@@ -566,7 +620,7 @@ TEST_F(SnapshotTest, filter_before_copy) {
     for (int i = 1; i <= 9; ++i) {
         ASSERT_TRUE(check_file_exist(fs, snapshot_path, i));
         std::stringstream content;
-        content << "file" << i;
+        content << "file" << i << ": ";
         if (i == 1) {
             content << data2;
         } else if (i == 6) {
@@ -578,6 +632,7 @@ TEST_F(SnapshotTest, filter_before_copy) {
     }
     ASSERT_TRUE(!check_file_exist(fs, snapshot_path, 100));
     ASSERT_TRUE(!check_file_exist(fs, snapshot_path, 101));
+    ASSERT_TRUE(!check_file_exist(fs, snapshot_path, 102));
 
     delete storage2;
     delete storage1;
@@ -749,7 +804,7 @@ TEST_F(SnapshotTest, snapshot_throttle_for_writing) {
 }
 
 TEST_F(SnapshotTest, snapshot_throttle_for_reading_without_enable_throttle) {
-    google::SetCommandLineOption("raft_enable_throttle_when_install_snapshot", "false");
+    GFLAGS_NS::SetCommandLineOption("raft_enable_throttle_when_install_snapshot", "false");
     braft::FileSystemAdaptor* fs;
     FOR_EACH_FILE_SYSTEM_ADAPTOR_BEGIN(fs);
 
@@ -829,11 +884,11 @@ TEST_F(SnapshotTest, snapshot_throttle_for_reading_without_enable_throttle) {
     delete storage1;
 
     FOR_EACH_FILE_SYSTEM_ADAPTOR_END;
-    google::SetCommandLineOption("raft_enable_throttle_when_install_snapshot", "true");
+    GFLAGS_NS::SetCommandLineOption("raft_enable_throttle_when_install_snapshot", "true");
 }
 
 TEST_F(SnapshotTest, snapshot_throttle_for_writing_without_enable_throttle) {
-    google::SetCommandLineOption("raft_enable_throttle_when_install_snapshot", "false");
+    GFLAGS_NS::SetCommandLineOption("raft_enable_throttle_when_install_snapshot", "false");
     braft::FileSystemAdaptor* fs;
     FOR_EACH_FILE_SYSTEM_ADAPTOR_BEGIN(fs);
 
@@ -912,11 +967,11 @@ TEST_F(SnapshotTest, snapshot_throttle_for_writing_without_enable_throttle) {
     delete storage1;
 
     FOR_EACH_FILE_SYSTEM_ADAPTOR_END;
-    google::SetCommandLineOption("raft_enable_throttle_when_install_snapshot", "true");
+    GFLAGS_NS::SetCommandLineOption("raft_enable_throttle_when_install_snapshot", "true");
 }
 
 TEST_F(SnapshotTest, dynamically_change_throttle_threshold) {
-    google::SetCommandLineOption("raft_minimal_throttle_threshold_mb", "1");
+    GFLAGS_NS::SetCommandLineOption("raft_minimal_throttle_threshold_mb", "1");
     braft::FileSystemAdaptor* fs;
     FOR_EACH_FILE_SYSTEM_ADAPTOR_BEGIN(fs);
 
@@ -995,5 +1050,5 @@ TEST_F(SnapshotTest, dynamically_change_throttle_threshold) {
     delete storage1;
 
     FOR_EACH_FILE_SYSTEM_ADAPTOR_END;
-    google::SetCommandLineOption("raft_minimal_throttle_threshold_mb", "0");
+    GFLAGS_NS::SetCommandLineOption("raft_minimal_throttle_threshold_mb", "0");
 }
