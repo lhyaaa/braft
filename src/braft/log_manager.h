@@ -203,6 +203,7 @@ friend class AppendBatcher;
     LogId _last_snapshot_id;
 
     bthread::ExecutionQueueId<StableClosure*> _disk_queue;
+    TaskOptions _options;
 };
 
 }  //  namespace braft

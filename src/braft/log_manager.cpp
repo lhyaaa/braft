@@ -30,6 +30,9 @@ namespace braft {
 DEFINE_int32(raft_leader_batch, 256, "max leader io batch");
 BRPC_VALIDATE_GFLAG(raft_leader_batch, ::brpc::PositiveInteger);
 
+DEFINE_bool(execute_in_place, false, "execute in place instead of running in bthread");
+BRPC_VALIDATE_GFLAG(execute_in_place, ::brpc::PassValidate);
+
 static bvar::Adder<int64_t> g_read_entry_from_storage
             ("raft_read_entry_from_storage_count");
 static bvar::PerSecond<bvar::Adder<int64_t> > g_read_entry_from_storage_second
@@ -81,6 +84,7 @@ int LogManager::init(const LogManagerOptions &options) {
     _disk_id.index = _last_log_index;
     _disk_id.term = _log_storage->get_term(_last_log_index);
     _fsm_caller = options.fsm_caller;
+    _options.in_place_if_possible  = FLAGS_execute_in_place;
     return 0;
 }
 
@@ -164,7 +168,7 @@ int64_t LogManager::last_log_index(bool is_flush) {
             return _last_log_index;
         }
         LastLogIdClosure c;
-        CHECK_EQ(0, bthread::execution_queue_execute(_disk_queue, &c));
+        CHECK_EQ(0, bthread::execution_queue_execute(_disk_queue, &c, &options));
         lck.unlock();
         c.wait();
         return c.last_log_id().index;
@@ -183,7 +187,7 @@ LogId LogManager::last_log_id(bool is_flush) {
             return _last_snapshot_id;
         }
         LastLogIdClosure c;
-        CHECK_EQ(0, bthread::execution_queue_execute(_disk_queue, &c));
+        CHECK_EQ(0, bthread::execution_queue_execute(_disk_queue, &c, &options));
         lck.unlock();
         c.wait();
         return c.last_log_id();
@@ -261,7 +265,7 @@ int LogManager::truncate_prefix(const int64_t first_index_kept,
     }
     _config_manager->truncate_prefix(first_index_kept);
     TruncatePrefixClosure* c = new TruncatePrefixClosure(first_index_kept);
-    const int rc = bthread::execution_queue_execute(_disk_queue, c);
+    const int rc = bthread::execution_queue_execute(_disk_queue, c, &options);
     lck.unlock();
     for (size_t i = 0; i < saved_logs_in_memory.size(); ++i) {
         saved_logs_in_memory[i]->Release();
@@ -279,7 +283,7 @@ int LogManager::reset(const int64_t next_log_index,
     _config_manager->truncate_prefix(_first_log_index);
     _config_manager->truncate_suffix(_last_log_index);
     ResetClosure* c = new ResetClosure(next_log_index);
-    const int ret = bthread::execution_queue_execute(_disk_queue, c);
+    const int ret = bthread::execution_queue_execute(_disk_queue, c, &options);
     lck.unlock();
     CHECK_EQ(0, ret) << "execq execute failed, ret: " << ret << " err: " << berror();
     for (size_t i = 0; i < saved_logs_in_memory.size(); ++i) {
@@ -312,7 +316,7 @@ void LogManager::unsafe_truncate_suffix(const int64_t last_index_kept) {
     _config_manager->truncate_suffix(last_index_kept);
     TruncateSuffixClosure* tsc = new
             TruncateSuffixClosure(last_index_kept, last_term_kept);
-    CHECK_EQ(0, bthread::execution_queue_execute(_disk_queue, tsc));
+    CHECK_EQ(0, bthread::execution_queue_execute(_disk_queue, tsc, &options));
 }
 
 int LogManager::check_and_resolve_conflict(
@@ -425,7 +429,7 @@ void LogManager::append_entries(
     }
 
     done->_entries.swap(*entries);
-    int ret = bthread::execution_queue_execute(_disk_queue, done);
+    int ret = bthread::execution_queue_execute(_disk_queue, done, &options);
     CHECK_EQ(0, ret) << "execq execute failed, ret: " << ret << " err: " << berror();
     wakeup_all_waiter(lck);
 }
